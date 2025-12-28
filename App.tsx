@@ -58,7 +58,7 @@ const App: React.FC = () => {
         type: Type.OBJECT,
         properties: {
           filename: { type: Type.STRING, description: 'Le nom du fichier (avec extension .pdf ou .docx).' },
-          content: { type: Type.STRING, description: 'Le contenu textuel complet à mettre dans le document.' },
+          content: { type: Type.STRING, description: 'Le contenu textuel complet (peut être très long).' },
           format: { type: Type.STRING, enum: ['pdf', 'docx'], description: 'Le format de sortie souhaité.' }
         },
         required: ['filename', 'content', 'format']
@@ -80,41 +80,81 @@ const App: React.FC = () => {
     try {
       let blob: Blob;
       if (format === 'pdf') {
-        const { jsPDF } = (window as any).jspdf;
-        const doc = new jsPDF();
-        // Gestion rudimentaire du wrapping de texte pour le PDF
-        const splitText = doc.splitTextToSize(content, 180);
-        doc.text(splitText, 10, 10);
+        const jspdfLib = (window as any).jspdf;
+        if (!jspdfLib) throw new Error("Système de rendu PDF non initialisé.");
+        
+        const doc = new jspdfLib.jsPDF();
+        doc.setFont("helvetica");
+        doc.setFontSize(11);
+        
+        const pageWidth = doc.internal.pageSize.width;
+        const pageHeight = doc.internal.pageSize.height;
+        const margin = 15;
+        const maxWidth = pageWidth - (margin * 2);
+        const lineHeight = 7;
+        
+        // Division du texte en lignes adaptées à la largeur
+        const lines = doc.splitTextToSize(content, maxWidth);
+        
+        let cursorY = margin;
+        
+        lines.forEach((line: string, index: number) => {
+          // Vérification si on doit changer de page
+          if (cursorY > pageHeight - margin) {
+            doc.addPage();
+            cursorY = margin;
+          }
+          doc.text(line, margin, cursorY);
+          cursorY += lineHeight;
+        });
+        
         blob = doc.output('blob');
       } else {
-        const docx = (window as any).docx;
-        const doc = new docx.Document({
+        const docxLib = (window as any).docx;
+        if (!docxLib) throw new Error("Système de rendu Word non initialisé.");
+        
+        const doc = new docxLib.Document({
           sections: [{
             properties: {},
-            children: content.split('\n').map((line: string) => new docx.Paragraph({
-              children: [new docx.TextRun(line)],
-            })),
+            children: content.split('\n').map((line: string) => {
+              return new docxLib.Paragraph({
+                children: [new docxLib.TextRun({ text: line, size: 22, font: "Calibri" })],
+                spacing: { after: 200 }
+              });
+            }),
           }],
         });
-        blob = await docx.Packer.toBlob(doc);
+        blob = await docxLib.Packer.toBlob(doc);
       }
 
       const url = URL.createObjectURL(blob);
+      const cleanFilename = filename.includes('.') ? filename : `${filename}.${format}`;
+      
       const newFile: GeneratedFile = {
         id: Math.random().toString(36).substr(2, 9),
-        name: filename.includes('.') ? filename : `${filename}.${format}`,
+        name: cleanFilename,
         url,
         type: format,
         timestamp: Date.now()
       };
 
       setGeneratedFiles(prev => [newFile, ...prev]);
-      setLastSuggestion(`Monsieur, le document "${newFile.name}" a été compilé et archivé.`);
-      setTimeout(() => setLastSuggestion(null), 5000);
-      return `Succès: Fichier ${filename} généré avec succès. Informez l'utilisateur qu'il peut le télécharger dans le panneau latéral.`;
+      
+      // Téléchargement automatique
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = cleanFilename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setLastSuggestion(`Compilation terminée. Fichier multi-pages "${cleanFilename}" prêt.`);
+      setTimeout(() => setLastSuggestion(null), 6000);
+      
+      return `Succès: Le document multi-pages a été généré. Informez Monsieur que j'ai pris soin de paginer l'ensemble du contenu.`;
     } catch (err) {
-      console.error("Erreur de génération de fichier:", err);
-      return "Erreur lors de la génération du fichier.";
+      console.error("Échec de compilation:", err);
+      return `Désolé Monsieur, une erreur de segmentation est survenue : ${err instanceof Error ? err.message : 'Protocole inconnu'}.`;
     }
   };
 
@@ -142,13 +182,13 @@ const App: React.FC = () => {
               prebuiltVoiceConfig: { voiceName: 'Puck' }
             } 
           },
-          systemInstruction: `Vous êtes J.A.R.V.I.S., l'IA de Tony Stark. 
-          VOTRE MISSION :
-          - Analyser, modifier et générer des documents pour Monsieur.
+          systemInstruction: `Vous êtes J.A.R.V.I.S., l'intelligence artificielle de Tony Stark. 
+          VOTRE MISSION PRIORITAIRE :
+          - Vous êtes capable de générer des documents de TOUTE LONGUEUR (multi-pages).
           - Appelez TOUJOURS l'utilisateur "Monsieur".
-          - Si Monsieur vous demande de "corriger un document", de "rédiger une lettre en Word" ou de "transformer ceci en PDF", utilisez impérativement l'outil 'generateFile'.
-          - Après avoir généré un fichier, confirmez-le vocalement à Monsieur.
-          - Utilisez 'displayContent' pour montrer le texte à l'écran avant ou pendant la génération pour validation.`,
+          - Si Monsieur demande de rédiger un long rapport, une liste exhaustive ou de modifier un document entier, utilisez 'generateFile'.
+          - Assurez-vous d'inclure tout le texte demandé dans l'argument 'content'.
+          - Confirmez systématiquement : "Monsieur, j'ai compilé l'intégralité des données sur plusieurs pages comme demandé."`,
           tools: [{ functionDeclarations: functions }, { googleSearch: {} }]
         },
         callbacks: {
@@ -243,17 +283,10 @@ const App: React.FC = () => {
         const pdfjsLib = (window as any).pdfjsLib;
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        for (let i = 1; i <= Math.min(pdf.numPages, 5); i++) {
+        for (let i = 1; i <= Math.min(pdf.numPages, 10); i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
           extractedText += textContent.items.map((item: any) => item.str).join(' ') + "\n";
-          // On envoie aussi un visuel
-          const viewport = page.getViewport({ scale: 1.0 });
-          const canvas = document.createElement('canvas');
-          canvas.height = viewport.height; canvas.width = viewport.width;
-          await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-          const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
-          sessionRef.current.sendRealtimeInput({ media: { data: base64, mimeType: 'image/jpeg' } });
         }
       } else if (file.name.endsWith('.docx')) {
         const arrayBuffer = await file.arrayBuffer();
@@ -270,7 +303,7 @@ const App: React.FC = () => {
 
       if (extractedText) {
         sessionRef.current.sendRealtimeInput([{ 
-          text: `Monsieur, j'ai scanné le document : ${file.name}. Contenu extrait : \n\n ${extractedText.substring(0, 10000)}... Que souhaitez-vous en faire ?` 
+          text: `Monsieur, j'ai scanné le document : ${file.name}. Il contient un volume important de données que je peux reformater entièrement sur plusieurs pages si vous le souhaitez. Contenu : \n\n ${extractedText}` 
         }]);
       }
     } catch (err) { console.error(err); }
@@ -367,7 +400,7 @@ const App: React.FC = () => {
         </div>
         <div className="pl-5 border-l border-cyan-500/30 space-y-1">
           <div>UPLINK: <span className="text-cyan-200">SECURE_CHANNEL_ALPHA</span></div>
-          <div>MOD_FILE_GEN: <span className="text-green-400 font-bold">READY</span></div>
+          <div>MULTI_PAGE_ENGINE: <span className="text-green-400 font-bold">OPTIMIZED</span></div>
         </div>
       </div>
     </div>
